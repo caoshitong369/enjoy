@@ -15,6 +15,7 @@ from datetime import datetime
 import xlwt
 import xlrd
 from apscheduler.schedulers.blocking import BlockingScheduler
+from configs.site_settings import COIN_QUERY_GRPC_ADDR, USERCENTER_GRPC_ADDR, GLOVAL_USER_EMAIL_LIST, GLOBAL_USER_LIST
 
 global_excel_data = {}
 global_excel_header = []
@@ -29,14 +30,14 @@ def make_time():
 
 # 根据uid查找用户id指定货币的余额，默认货币是DT
 def query_user_dt(user_id, coin_id=104):
-    coin_query_rpc_conn = grpc.insecure_channel('127.0.0.1:11515')
+    coin_query_rpc_conn = grpc.insecure_channel(COIN_QUERY_GRPC_ADDR)
     coin_query_rpc_client = query_pb2_grpc.CoinQueryServiceStub(channel=coin_query_rpc_conn)
     req = apis_pb2.UserCoinDetailRequest(uid=apis_pb2.CoinUserIDRequest(user_id=user_id), coin_id=coin_id)
     rpc = coin_query_rpc_client.UserCoinDetail(req, metadata=[("app_id", "admin")])
     global global_total
     if rpc.base_reply.code == 1:
         user_id = int(rpc.user_id)
-        amount = float(rpc.quantity)
+        amount = round(float(rpc.quantity), 2)
         if user_id in global_excel_data:
             global_excel_data[user_id].append(amount)
         else:
@@ -50,12 +51,13 @@ def query_user_dt(user_id, coin_id=104):
     return
 
 
-global_list = []
+global_list = set()
+excel_list_uid = set()
 
 
 # 根据指定的uid查找他邀请的人的id
 def query_user_dts(uid):
-    usercenter_rpc_conn = grpc.insecure_channel('127.0.0.1:11100')
+    usercenter_rpc_conn = grpc.insecure_channel(USERCENTER_GRPC_ADDR)
     usercenter_rpc_client = service_pb2_grpc.UserServiceStub(channel=usercenter_rpc_conn)
     list1 = []
     req = service_pb2.ListUserInvitedRequest(uid=uid)
@@ -76,7 +78,7 @@ def mul_threading_produce(uid_list):
     nloops = range(len(uid_list))
     if len(uid_list) > 0:
         for uid in uid_list:
-            global_list.append(uid)
+            global_list.add(uid)
             t = Thread(target=query_user_dts, args=(uid,))
             threads.append(t)
         for loop in nloops:
@@ -116,6 +118,7 @@ def read_excel():
         if num_rows - 1 > num > 0:
             excel_list = table.row_values(num, start_colx=0, end_colx=None)
             global_excel_data[excel_list[0]] = excel_list
+            excel_list_uid.add(excel_list[0])
 
 
 class write_excel(object):
@@ -154,7 +157,7 @@ class write_excel(object):
         pass
 
 
-TABLE = """  <table border="2">
+TABLE = """  <table border="1">
                 <thead>
                 <tr class="text-c">
                     {}
@@ -186,7 +189,7 @@ def send_email(receiver_list):
                 logging.debug("错误的邮箱地址：email_receivers:{}".format(recv))
     title = "统计DT余额"
     table_content = ""
-
+    table_end = ""
     table_head_part = ""
     num = 1
     for value in global_excel_data.values():
@@ -196,6 +199,10 @@ def send_email(receiver_list):
             table_body_part += "<td>{}</td>".format(data) + "\n"
         num += 1
         table_content += table_part.format(table_body_part) + "\n"
+    table_end += "<td>{}</td>".format(num) + "\n"
+    for end in global_excel_end:
+        table_end += "<td>{}</td>".format(end) + "\n"
+    table_content += table_part.format(table_end)
     table_head_part += "<th>{}</th>".format("Serial number") + "\n"
     for head in global_excel_header:
         table_head_part += "<th>{}</th>".format(head) + "\n"
@@ -216,20 +223,19 @@ def exists_file(user_id_list):
     title = "{} Balance".format(date_time)
     if os.path.exists("DT余额.xls"):
         read_excel()
-        global_excel_header.append(title)
-        mul_threading_consumer(user_id_list)
-        global_excel_end.append(global_total)
+        if title in global_excel_header:
+            user_id_list = user_id_list - excel_list_uid
+            mul_threading_consumer(user_id_list)
+            total = sum(global_excel_end[1:]) + global_total
+            global_excel_end[-1:] = (total,)
+        else:
+            global_excel_header.append(title)
+            mul_threading_consumer(user_id_list)
+            global_excel_end.append(global_total)
     else:
         global_excel_header = ["user_id", title]
         mul_threading_consumer(user_id_list)
         global_excel_end = ["total", global_total]
-
-
-# 给定的用户查找列表
-global_user_list = [1001750, 1015015]
-
-# 给定要发送邮件的列表
-global_user_email_list = ["1021530327@qq.com"]
 
 
 # 脚本主程序
@@ -240,14 +246,14 @@ def main():
     global_excel_header = []
     global_excel_end = []
     global_total = 0
-    global_list = []
-    t = Thread(target=mul_threading_produce, args=(global_user_list,))
+    global_list = set()
+    t = Thread(target=mul_threading_produce, args=(GLOBAL_USER_LIST,))
     t.start()
     t.join()
     exists_file(global_list)
     with write_excel(global_excel_data):
         print "开始写入"
-    receiver_list = global_user_email_list
+    receiver_list = GLOVAL_USER_EMAIL_LIST
     send_email(receiver_list)
 
 
